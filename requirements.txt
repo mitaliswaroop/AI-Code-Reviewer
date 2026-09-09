@@ -9,3 +9,4 @@ requests
 google-genai
 python-dotenv
 flake8
+semgrep

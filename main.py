@@ -66,20 +66,46 @@ def run_flake8(code_string: str) -> str:
     return result.stdout.replace(temp_path, "file.py")
 
 
-def review_code_with_gemini(diff_text: str, flake8_report: str) -> str:
+def run_semgrep(code_string: str) -> str:
+    """Runs Semgrep on a string of code to find security vulnerabilities."""
+    with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as temp:
+        temp.write(code_string.encode("utf-8"))
+        temp_path = temp.name
+
+    # Run semgrep with the default CI ruleset and disable telemetry
+    result = subprocess.run(
+        ["semgrep", "scan", "--config=p/ci", "--metrics=off", "--quiet", temp_path],
+        capture_output=True,
+        text=True
+    )
+
+    os.remove(temp_path)
+
+    # Clean up the absolute temporary paths for the AI
+    return result.stdout.replace(temp_path, "file.py")
+
+
+def review_code_with_gemini(diff_text: str, flake8_report: str, semgrep_report: str) -> str:
+    """Sends the diff and static analysis reports to Gemini for review."""
     client = genai.Client(api_key=GEMINI_TOKEN)
     prompt = f"""You are a senior software engineer. Review the following PR diff.
-    We have also run the Flake8 linter on the code. Here is the Linter report:
+    We have run two static analysis tools on the code. 
+
+    1. Flake8 (Style & Syntax):
     {flake8_report}
+
+    2. Semgrep (Security & Bugs):
+    {semgrep_report}
 
     Focus exclusively on:
     - Logic bugs
     - Security vulnerabilities
     - Major performance issues
-    - Summarizing the Flake8 linter issues if any exist.
+    - Synthesizing the Flake8 and Semgrep findings into actionable advice.
 
     Code Diff:
-    {diff_text}"""
+    {diff_text}
+    """
 
     # A list of models to try, from fastest/cheapest to most capable
     models_to_try = [
@@ -127,20 +153,31 @@ def process_review_task(owner: str, repo: str, pr_number: int):
         print(f"\n[Processing] Fetching diff for {owner}/{repo} PR #{pr_number}...")
         diff = get_pr_diff(owner, repo, pr_number)
 
-        print("[Processing] Running Flake8 static analysis...")
+        print("[Processing] Running Flake8 and Semgrep static analysis...")
         python_files = get_pr_files(owner, repo, pr_number)
 
         flake8_report = ""
-        for file in python_files:
-            issues = run_flake8(file["content"])
-            if issues:
-                flake8_report += f"\nIssues in {file['filename']}:\n{issues}\n"
+        semgrep_report = ""
 
+        for file in python_files:
+            # Run Flake8
+            f_issues = run_flake8(file["content"])
+            if f_issues:
+                flake8_report += f"\nIssues in {file['filename']}:\n{f_issues}\n"
+
+            # Run Semgrep
+            s_issues = run_semgrep(file["content"])
+            if s_issues:
+                semgrep_report += f"\nIssues in {file['filename']}:\n{s_issues}\n"
+
+        # Provide clean fallback messages if the code is flawless
         if not flake8_report:
             flake8_report = "Flake8 found no styling or syntax issues!"
+        if not semgrep_report:
+            semgrep_report = "Semgrep found no security vulnerabilities!"
 
         print("[Processing] Running Gemini code review...")
-        review = review_code_with_gemini(diff, flake8_report)
+        review = review_code_with_gemini(diff, flake8_report, semgrep_report)
 
         print("[Processing] Sending review to GitHub...")
         post_comment_to_pr(owner, repo, pr_number, review)
