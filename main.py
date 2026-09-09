@@ -3,6 +3,8 @@ import requests
 from fastapi import FastAPI, Request, BackgroundTasks
 from google import genai
 from dotenv import load_dotenv
+import subprocess
+import tempfile
 
 # Load environment variables from the .env file
 load_dotenv()
@@ -25,20 +27,59 @@ def get_pr_diff(owner: str, repo: str, pr_num: int) -> str:
     raise Exception(f"GitHub Error {response.status_code}: {response.text}")
 
 
-def review_code_with_gemini(diff_text: str) -> str:
-    """Sends the diff to Gemini for review, falling back to other models if busy."""
+def get_pr_files(owner: str, repo: str, pr_num: int) -> list:
+    """Fetches the actual raw Python files from the PR."""
+    url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_num}/files"
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    response = requests.get(url, headers=headers)
+
+    files_data = []
+    if response.status_code == 200:
+        for file in response.json():
+            if file["filename"].endswith(".py"):
+                raw_url = file["raw_url"]
+                raw_response = requests.get(raw_url, headers=headers)
+                files_data.append({
+                    "filename": file["filename"],
+                    "content": raw_response.text
+                })
+    return files_data
+
+
+def run_flake8(code_string: str) -> str:
+    """Runs flake8 on a string of Python code and returns the report."""
+    # Create a temporary file to hold the code
+    with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as temp:
+        temp.write(code_string.encode("utf-8"))
+        temp_path = temp.name
+
+    # Run flake8 strictly via subprocess
+    result = subprocess.run(["flake8", temp_path], capture_output=True, text=True)
+
+    # Clean up the file so we don't leak memory
+    os.remove(temp_path)
+
+    # Flake8 returns the temporary absolute path. Let's clean it up.
+    return result.stdout.replace(temp_path, "file.py")
+
+
+def review_code_with_gemini(diff_text: str, flake8_report: str) -> str:
     client = genai.Client(api_key=GEMINI_TOKEN)
-    prompt = f"""You are a senior software engineer. Review the following pull request diff.
-Focus exclusively on:
-- Logic bugs
-- Security vulnerabilities
-- Major performance issues
+    prompt = f"""You are a senior software engineer. Review the following PR diff.
+    We have also run the Flake8 linter on the code. Here is the Linter report:
+    {flake8_report}
 
-Keep the response brief, structured, and actionable.
+    Focus exclusively on:
+    - Logic bugs
+    - Security vulnerabilities
+    - Major performance issues
+    - Summarizing the Flake8 linter issues if any exist.
 
-Code Diff:
-{diff_text}
-"""
+    Code Diff:
+    {diff_text}"""
 
     # A list of models to try, from fastest/cheapest to most capable
     models_to_try = [
@@ -86,17 +127,23 @@ def process_review_task(owner: str, repo: str, pr_number: int):
         print(f"\n[Processing] Fetching diff for {owner}/{repo} PR #{pr_number}...")
         diff = get_pr_diff(owner, repo, pr_number)
 
+        print("[Processing] Running Flake8 static analysis...")
+        python_files = get_pr_files(owner, repo, pr_number)
+
+        flake8_report = ""
+        for file in python_files:
+            issues = run_flake8(file["content"])
+            if issues:
+                flake8_report += f"\nIssues in {file['filename']}:\n{issues}\n"
+
+        if not flake8_report:
+            flake8_report = "Flake8 found no styling or syntax issues!"
+
         print("[Processing] Running Gemini code review...")
-        review = review_code_with_gemini(diff)
+        review = review_code_with_gemini(diff, flake8_report)
 
-        print("\n=== AI Code Review Result ===")
-        print(review.strip())
-        print("==============================\n")
-
-        # --- NEW CODE ---
         print("[Processing] Sending review to GitHub...")
         post_comment_to_pr(owner, repo, pr_number, review)
-        # ----------------
 
     except Exception as e:
         print(f"[Error] Failed to process review: {e}")
