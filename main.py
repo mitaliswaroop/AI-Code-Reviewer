@@ -5,11 +5,21 @@ from google import genai
 from dotenv import load_dotenv
 import subprocess
 import tempfile
+from fastapi.middleware.cors import CORSMiddleware
+from database import SessionLocal, PRReview
 
 # Load environment variables from the .env file
 load_dotenv()
 
 app = FastAPI(title="AI Code Reviewer")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows any frontend to fetch data (we will secure this later)
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Now it pulls securely from .env instead of being hardcoded
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
@@ -206,3 +216,13 @@ async def handle_github_webhook(request: Request, background_tasks: BackgroundTa
 
     print("[DEBUG] Ignored. We only care about Pull Requests.")
     return {"status": "ignored"}
+
+@app.get("/api/reviews")
+def get_all_reviews():
+    db = SessionLocal()
+    try:
+        # Fetch the 50 most recent reviews, newest first
+        reviews = db.query(PRReview).order_by(PRReview.created_at.desc()).limit(50).all()
+        return reviews
+    finally:
+        db.close()
