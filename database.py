@@ -14,7 +14,12 @@ else:
 
 # 2. Configure the Engine
 # Neon requires SSL, so we pass sslmode='require' directly to the connection arguments
-engine = create_engine(DATABASE_URL, connect_args={'sslmode': 'require'})
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={'sslmode': 'require'},
+    pool_pre_ping=True,  # Checks if connection is alive before using it
+    pool_recycle=300     # Safely recycles connections every 5 minutes
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
