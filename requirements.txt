@@ -10,3 +10,5 @@ google-genai
 python-dotenv
 flake8
 semgrep
+sqlalchemy
+psycopg2-binary
