@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 import subprocess
 import tempfile
 from fastapi.middleware.cors import CORSMiddleware
-from database import SessionLocal, PRReview
+from database import SessionLocal, PRReview, save_review_to_db
 
 # Load environment variables from the .env file
 load_dotenv()
@@ -191,6 +191,17 @@ def process_review_task(owner: str, repo: str, pr_number: int):
 
         print("[Processing] Sending review to GitHub...")
         post_comment_to_pr(owner, repo, pr_number, review)
+
+        print("[Processing] Running Gemini code review...")
+        review = review_code_with_gemini(diff, flake8_report, semgrep_report)
+
+        print("[Processing] Sending review to GitHub...")
+        post_comment_to_pr(owner, repo, pr_number, review)
+
+        # --- ADD THESE THREE LINES ---
+        print("[Processing] Saving JSON payload to PostgreSQL...")
+        save_review_to_db(f"{owner}/{repo}", pr_number, flake8_report, semgrep_report, review)
+        print("[Success] Review saved to database!")
 
     except Exception as e:
         print(f"[Error] Failed to process review: {e}")
